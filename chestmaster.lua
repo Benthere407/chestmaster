@@ -758,9 +758,25 @@ end
 local SUB = { rules = 'Contents', status = 'Status', settings = 'Settings', help = 'Help' };
 local PAGES = {};
 
+-- Free you from a stuck menu / event: tell the server the last chest menu is finished, drop
+-- what ChestMaster was doing, and release the game. `only_if_stuck`: tell the server only when
+-- you are actually in an event (the widget's switch runs this on every click).
+local function unstick(only_if_stuck)
+    local m = state.last_menu;
+    if m and (not only_if_stuck or my_status() == 4) then pcall(send_menu, m, 0, 0, CLOSE_PARAM2); end
+    state.job, state.pending_talk, state.menu_open, state.game_talk = nil, nil, nil, nil;
+    release_now('unstick');
+end
+
 local function set_enabled(on)
     cfg.enabled = on; save();
     log('Automation ' .. (on and 'ON.' or 'OFF.'));
+end
+
+-- the widget's on / off switch: flips ChestMaster and frees you if you're stuck
+local function widget_toggle()
+    set_enabled(not cfg.enabled);
+    unstick(true);
 end
 
 local function rule_rows(group)
@@ -1245,9 +1261,9 @@ local function draw_widget_yuna()
 
             -- the tag is the on / off switch; the plate drags the widget; right-click opens ChestMaster
             imgui.SetCursorScreenPos({ tag_x, tag_y });
-            if imgui.InvisibleButton('##cm_wtag', { tag_w, tag_h }) then set_enabled(not cfg.enabled); end
+            if imgui.InvisibleButton('##cm_wtag', { tag_w, tag_h }) then widget_toggle(); end
             if imgui.IsWindowHovered() then
-                imgui.SetTooltip(('ChestMaster %s%s - Forbidden Keys: %s\nClick the tag: on / off. Drag the plate to move. Right-click: settings.')
+                imgui.SetTooltip(('ChestMaster %s%s - Forbidden Keys: %s\nClick the tag: on / off (also frees you if stuck). Drag the plate to move. Right-click: settings.')
                     :fmt(cfg.enabled and 'ON' or 'OFF', cfg.auto_talk and ' (auto)' or '',
                          state.keys.id and tostring(state.keys.count) or '?'));
                 if imgui.IsMouseClicked(1) then state.win.open[1] = true; end
@@ -1273,7 +1289,7 @@ local function draw_widget()
     if imgui.Begin('ChestMaster pill###cm_widget', WIDGET_OPEN, flags) then
         vc.safe(function ()
             local v = vc.switch('w_en', 'ChestMaster', cfg.enabled);
-            if v ~= nil then set_enabled(v); end
+            if v ~= nil then widget_toggle(); end
             imgui.SameLine();
             local job, now = state.job, os.clock();
             if not cfg.enabled then
@@ -1336,17 +1352,7 @@ ashita.events.register('command', 'cm_command', function (e)
         if not l then log('No chest yet.'); return; end
         log(('%s chest: %s -> %s%s'):fmt(l.color, l.desc, ACT_NAMES[l.action], l.note and (' - ' .. l.note) or ''));
     elseif sub == 'unstick' then
-        -- finish the last chest menu with the server (if we know it), then release the game
-        local m = state.last_menu;
-        if m then pcall(send_menu, m, 0, 0, CLOSE_PARAM2); end
-        state.job, state.pending_talk, state.menu_open = nil, nil, nil;
-        for i, t in ipairs({ 0, 1 }) do
-            later(0.3 * i, function ()
-                pcall(function ()
-                    AshitaCore:GetPacketManager():AddIncomingPacket(0x52, { 0x52, 0x04, 0x00, 0x00, t, 0x00, 0x00, 0x00 });
-                end);
-            end);
-        end
+        unstick(false);
         log('Releasing you from the menu/event. If still stuck, zone or /cm unstick again.');
     elseif sub == 'debug' then
         state.debug = not state.debug;

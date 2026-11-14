@@ -1,4 +1,4 @@
-# ChestMaster
+﻿# ChestMaster
 
 An Ashita v4 / VanaCore addon for Abyssea's **Sturdy Pyxis** chests on LandSandBoat servers.
 Walk up to your chests and ChestMaster opens, destroys or leaves each one by what it holds:
@@ -29,7 +29,7 @@ no clicking through menus.
   already handling never leaves you stuck, and `/cm unstick` frees you if anything does.
 - **On-screen widget** in the VanaCore look: Classic, or YunaUI's **Vex** (menu card or party
   slant; Yuna / Blue & white / Purple) and **Hex link** styles, showing a chest icon, your
-  Forbidden Key count and an ON / OFF / WORK tag. Click the tag to turn it on or off.
+  Forbidden Key count and an ON / OFF / WORK tag. Click the tag to turn it on or off (it also frees you if you're ever stuck in a menu).
 
 ## Install
 
