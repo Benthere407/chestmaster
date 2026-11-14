@@ -1,0 +1,62 @@
+# ChestMaster
+
+An Ashita v4 / VanaCore addon for Abyssea's **Sturdy Pyxis** chests on LandSandBoat servers.
+Walk up to your chests and ChestMaster opens, destroys or leaves each one by what it holds:
+no clicking through menus.
+
+## What it does
+
+- **Knows what's inside.** The chest's contents are read from the server's own menu data
+  (LandSandBoat's `sturdypyxis` content table), not guessed from chat text: Cruor, EXP,
+  time extensions, every light (soothing, pearlescent, azure, ruby, amber, golden, silvery,
+  ebon, by strength), temporary items, items, powerful items and key items, plus the chest colour.
+- **Your rule per kind of chest:**
+
+  | Rule | What happens |
+  |---|---|
+  | **Destroy** | Breaks the chest; you get Cruor (10 x tier). |
+  | **Open** | Trades the chest a Forbidden Key. Cruor, EXP, lights and time are applied at once; item chests pop their item list up for you. |
+  | **Timed** | Opens one, then destroys that kind until a timer (default 5 min) runs out, then opens the next. Good for Soothing light. |
+  | **Leave** | Leaves it to you (its menu can be opened for you). |
+
+- **Auto mode.** Talks to your chests by itself, one at a time, with a running count:
+  `[3/12] Blue chest: Tremendous exp -> Destroy` ... `Done - 12 chests handled.`
+- **Only your chests.** A chest counts as yours when it appears where a monster your party or
+  alliance claimed just died. Other people's chests, free-spawning ones and mimics are left alone.
+- **Waits until out of combat** (optional) so chests are handled between pulls, not in the
+  middle of AoE farming.
+- **Safe with your own clicks.** Chests you click are handled too; clicking one ChestMaster is
+  already handling never leaves you stuck, and `/cm unstick` frees you if anything does.
+- **On-screen widget** in the VanaCore look: Classic, or YunaUI's **Vex** (menu card or party
+  slant; Yuna / Blue & white / Purple) and **Hex link** styles, showing a chest icon, your
+  Forbidden Key count and an ON / OFF / WORK tag. Click the tag to turn it on or off.
+
+## Install
+
+1. Copy the `chestmaster` folder (with `chestmaster.lua` and `vcmenu.lua`) into
+   `addons/` (Ashita) or `addons/ashita/` (VanaCore).
+2. `/addon load chestmaster`
+3. `/cm` opens the window: set your rules on the **Contents** page.
+
+## Commands
+
+| Command | |
+|---|---|
+| `/cm` | show / hide the window |
+| `/cm on` / `off` / `toggle` | automation on or off |
+| `/cm auto` | auto mode on or off |
+| `/cm widget` | show / hide the on-screen widget |
+| `/cm last` | the last chest and what was done |
+| `/cm unstick` | free yourself if you're ever stuck in place |
+| `/cm debug` | debug messages in chat |
+
+Settings are saved per character. **Settings > Debug** can write `chestmaster_trace.log`
+(packet trace for fixing problems); it is off by default.
+
+## Notes
+
+- Built and tested against a LandSandBoat-based server. Chest contents, menu options (999 =
+  break the chest) and the Forbidden Key trade follow LandSandBoat's
+  `scripts/globals/abyssea/sturdypyxis/`.
+- Opening uses Forbidden Keys from your main inventory.
+- The window uses `vcmenu.lua`, a small VanaCore-style menu library shipped alongside.
