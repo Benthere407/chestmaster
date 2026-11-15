@@ -149,6 +149,10 @@ local defaults = T{
     own_only    = true,    -- auto-talk only to chests from monsters your party / alliance claimed
     leave_show  = false,   -- auto mode reaching a Leave chest: false = skip it (close quietly) and carry on; true = show you its menu
     wait_combat = true,    -- auto mode: hold off until the fight is over (you idle, no party-claimed monster alive)
+    combat_scope = 'party', -- whose fights count as combat: 'self' | 'party' | 'alliance'
+    near_fight  = true,    -- a living monster close to you that is claimed or hurt counts as combat
+    combat_radius = 15,    -- ...this close (yalms)
+    settle      = 3,       -- seconds after the last kill / fight before chests are handled
     trace       = false,   -- write chestmaster_trace.log in the addon folder (debugging only)
 };
 
@@ -169,6 +173,7 @@ local state = {
     timed    = {},    -- [category] = os.clock() it was last opened (Timed rule)
     mobs     = {},    -- [entity index] = { sid, x, y, z, dead }: monsters your party / alliance claimed
     deaths   = {},    -- { x, y, z, t }: where those monsters died lately
+    conceal  = {},    -- os.clock() of each "The monster was concealing a treasure chest!" lately
     seen_pyxis = {},  -- [server id] = true: chests already looked at
     owned    = {},    -- [server id] = true: chests that came from your party's / alliance's kills
     owned_n  = 0,
@@ -470,14 +475,34 @@ local function party_ids()
     return ids;
 end
 
+-- Whose fights count as combat (Settings > Auto mode: Me / My party / Alliance): their claim ids
+-- (16 bits, as above) and entity indexes [index] = slot. Slots 0-5 are your party, 6-17 the alliance.
+local SCOPE_LAST = { self = 0, party = 5, alliance = 17 };
+local function scope_members()
+    local last = SCOPE_LAST[cfg.combat_scope or 'party'] or 5;
+    local ids, idxs, party = {}, {}, AshitaCore:GetMemoryManager():GetParty();
+    for p = 0, last do
+        if party:GetMemberIsActive(p) == 1 then
+            local id = party:GetMemberServerId(p);
+            if id and id ~= 0 then ids[bit.band(id, 0xFFFF)] = true; end
+            local idx = party:GetMemberTargetIndex(p);
+            if idx and idx ~= 0 then idxs[idx] = p; end
+        end
+    end
+    return ids, idxs;
+end
+
 local function pos_of(ent, i)
     return ent:GetLocalPositionX(i), ent:GetLocalPositionY(i), ent:GetLocalPositionZ(i);
 end
 
-local function add_death(m, now)
+local function add_death(m, now, sc_ids)
     if m.dead then return; end
     m.dead = true;
     table.insert(state.deaths, { x = m.x, y = m.y, z = m.z, t = now });
+    if sc_ids and m.claim and sc_ids[m.claim] then   -- a kill of the members whose fights count
+        state.combat_until = math.max(state.combat_until or 0, now + (cfg.settle or 3));   -- kills still coming in
+    end
     dbg(('party kill: monster id %d died at %.1f, %.1f'):fmt(m.sid, m.x, m.y));
 end
 
@@ -487,6 +512,12 @@ local function track_world(now)
     local ent = AshitaCore:GetMemoryManager():GetEntity();
     local ids = party_ids();
     local here = {};
+    -- the members whose fights count as combat (you / your party / the alliance): a monster
+    -- targeting one of them, or claimed by one, or one of them engaged
+    local sc_ids, mine = scope_members();
+    local aggro = false;
+    local near = false;                        -- a monster in a fight close to you
+    local radius = (cfg.near_fight ~= false) and (cfg.combat_radius or 15) or 0;
 
     for i = 1, 0x3FF do
         local name = ent:GetName(i);
@@ -494,24 +525,59 @@ local function track_world(now)
             local sid   = ent:GetServerId(i);
             local flags = ent:GetSpawnFlags(i);
             if name:lower() == PYXIS_NAME then
+                if state.seen_pyxis[sid] then state.seen_pyxis[sid].last = now; end
                 if bit.band(flags, MOB_FLAG) ~= 0 then
                     state.owned[sid] = nil;            -- a monster now (a mimic): never ours to talk to
-                elseif not state.seen_pyxis[sid] then
-                    state.seen_pyxis[sid] = true;
-                    local x, y, z = pos_of(ent, i);
-                    for _, d in ipairs(state.deaths) do
-                        local dx, dy, dz = d.x - x, d.y - y, d.z - z;
-                        if now - d.t < 15 and dx * dx + dy * dy + dz * dz < 36 then   -- within 6 yalms
+                elseif not state.owned[sid] then
+                    local first = state.seen_pyxis[sid];
+                    if not first then
+                        first = { t = now, last = now };
+                        state.seen_pyxis[sid] = first;
+                        dbg(('pyxis [%03X] id %d appeared'):fmt(i, sid));
+                    end
+                    -- keep deciding for 30s: under AoE lag the kill or the server's message can
+                    -- arrive after the chest does
+                    if now - first.t < 30 then
+                        local x, y, z = pos_of(ent, i);
+                        local why = nil;
+                        for _, d in ipairs(state.deaths) do                -- a party kill on this spot
+                            local dx, dy, dz = d.x - x, d.y - y, d.z - z;
+                            if math.abs(d.t - first.t) < 30 and dx * dx + dy * dy + dz * dz < 36 then
+                                why = 'party/alliance kill here';
+                                break;
+                            end
+                        end
+                        if not why and math.sqrt(ent:GetDistance(i)) <= 30 then   -- "...concealing a treasure chest!"
+                            for k, ct in ipairs(state.conceal) do
+                                if math.abs(ct - first.t) < 20 then   -- (chat floods delay the message)
+                                    table.remove(state.conceal, k);
+                                    why = 'treasure chest message';
+                                    break;
+                                end
+                            end
+                        end
+                        if why then
                             state.owned[sid] = true;
                             state.owned_n = state.owned_n + 1;
-                            break;
+                            state.last_owned_t = now;   -- (a round isn't over while yours keep turning up)
+                            dbg(('pyxis [%03X] id %d is YOURS (%s)'):fmt(i, sid, why));
                         end
                     end
-                    dbg(('pyxis [%03X] id %d appeared: %s'):fmt(i, sid,
-                        state.owned[sid] and 'YOURS (party/alliance kill)' or 'not yours - auto mode leaves it'));
                 end
             elseif bit.band(flags, MOB_FLAG) ~= 0 then
                 here[i] = true;
+                -- a living monster with you or your party as its target (you have hate): combat
+                local hpp = ent:GetHPPercent(i);
+                if not aggro and hpp > 0 then
+                    local ok, ti = pcall(function () return ent:GetTargetedIndex(i); end);
+                    if ok and ti and ti ~= 0 and mine[ti] then aggro = true; end
+                end
+                -- a living monster close by that is claimed by anyone or already hurt: a fight is
+                -- going on right here (stunned / slept monsters target no one, but are claimed)
+                if not near and radius > 0 and hpp > 0 then
+                    local raw = bit.band(ent:GetClaimStatus(i) or 0, 0xFFFF);
+                    if (raw ~= 0 or hpp < 100) and math.sqrt(ent:GetDistance(i)) <= radius then near = true; end
+                end
                 local m = state.mobs[i];
                 if m and m.sid ~= sid then m = nil; state.mobs[i] = nil; end   -- index reused by another monster
                 local claim = bit.band(ent:GetClaimStatus(i) or 0, 0xFFFF);   -- (upper bits: flags)
@@ -520,29 +586,50 @@ local function track_world(now)
                     local x, y, z = pos_of(ent, i);
                     if not m then m = { sid = sid }; state.mobs[i] = m; end
                     m.x, m.y, m.z = x, y, z;
-                    if ent:GetHPPercent(i) == 0 then add_death(m, now); end
+                    if ours then m.claim = claim; end   -- who claimed it (for the combat scope)
+                    if ent:GetHPPercent(i) == 0 then add_death(m, now, sc_ids); end
                 end
             end
         end
     end
 
+    -- chests that are gone (opened, destroyed, despawned): forget them. The game reuses a small
+    -- pool of chest ids, so a new chest later can come back with the same id and must start fresh.
+    for sid, s in pairs(state.seen_pyxis) do
+        if now - (s.last or s.t) > 3 then
+            state.seen_pyxis[sid], state.owned[sid], state.done[sid] = nil, nil, nil;
+            state.attempts[sid], state.tried_at[sid], state.reopen[sid] = nil, nil, nil;
+            dbg(('pyxis id %d gone - forgotten'):fmt(sid));
+        end
+    end
+
     -- watched monsters that vanished: died (or despawned) where last seen
     for i, m in pairs(state.mobs) do
-        if not here[i] then add_death(m, now); state.mobs[i] = nil; end
+        if not here[i] then add_death(m, now, sc_ids); state.mobs[i] = nil; end
     end
 
     -- in combat: you're engaged, or a monster your party / alliance claimed is still alive.
     -- Auto mode waits until 2s after the last of it.
-    local fighting = (my_status() == 1);
+    -- (AoE: you may never be engaged, so a party member engaged, or a kill / chest in the
+    -- last few seconds, counts too: it waits until the kills stop)
+    local fighting = (my_status() == 1) or aggro or near;
     if not fighting then
-        for _, m in pairs(state.mobs) do
-            if not m.dead then fighting = true; break; end
+        for _, m in pairs(state.mobs) do   -- a monster claimed by one of them, still alive
+            if not m.dead and m.claim and sc_ids[m.claim] then fighting = true; break; end
         end
     end
-    if fighting then state.combat_until = now + 2.0; end
-    -- forget old deaths
+    if not fighting then
+        for idx, slot in pairs(mine) do    -- one of them engaged (you are checked above)
+            if slot ~= 0 and ent:GetStatus(idx) == 1 then fighting = true; break; end
+        end
+    end
+    if fighting then state.combat_until = math.max(state.combat_until or 0, now + (cfg.settle or 3)); end
+    -- forget old deaths and chest messages
     for k = #state.deaths, 1, -1 do
-        if now - state.deaths[k].t > 20 then table.remove(state.deaths, k); end
+        if now - state.deaths[k].t > 45 then table.remove(state.deaths, k); end
+    end
+    for k = #state.conceal, 1, -1 do
+        if now - state.conceal[k] > 45 then table.remove(state.conceal, k); end
     end
 end
 
@@ -557,7 +644,8 @@ local function auto_scan(now)
     local st = my_status();
     if st ~= 0 and st ~= 1 then return; end   -- idle or engaged only
 
-    local ent, best, left = AshitaCore:GetMemoryManager():GetEntity(), nil, 0;
+    local ent, best, left, far, waiting = AshitaCore:GetMemoryManager():GetEntity(), nil, 0, 0, 0;
+    local range = cfg.auto_range or 5;
     for i = 1, 0x3FF do
         local name = ent:GetName(i);
         if name and #name > 0 and name:lower() == PYXIS_NAME and bit.band(ent:GetRenderFlags0(i), 0x200) ~= 0
@@ -565,20 +653,29 @@ local function auto_scan(now)
             local id = ent:GetServerId(i);
             local d  = math.sqrt(ent:GetDistance(i));
             local mine = state.owned[id] or not cfg.own_only;
-            if id ~= 0 and mine and d <= (cfg.auto_range or 5) and not state.done[id]
-               and (state.attempts[id] or 0) < 2 and now - (state.tried_at[id] or -99) > 8 then
-                left = left + 1;
-                if not best or d < best.d then best = { index = i, id = id, d = d }; end
+            if id ~= 0 and mine and not state.done[id] and (state.attempts[id] or 0) < 3 then
+                if d > range then
+                    far = far + 1;                                   -- yours, but too far to talk to
+                elseif now - (state.tried_at[id] or -99) > 8 then
+                    left = left + 1;
+                    if not best or d < best.d then best = { index = i, id = id, d = d }; end
+                else
+                    waiting = waiting + 1;                           -- didn't answer: tried again soon
+                end
             end
         end
     end
     if not best then
-        -- nothing left in range: say so once, after a round of chests
+        -- nothing to do right now. A round is over once nothing is waiting for a retry and no
+        -- chest of yours has turned up for 5s (under lag they keep arriving): say so once.
         local b = state.batch;
-        if b and not state.job and not state.pending_talk then
-            local left = b.leave or 0;
-            log(('All chests checked - %d chest%s done%s.'):fmt(b.n - left, (b.n - left) == 1 and '' or 's',
-                left > 0 and (', %d left for you to check'):fmt(left) or ''));
+        if b and not state.job and not state.pending_talk and waiting == 0
+           and now - (state.last_owned_t or 0) >= 5 then
+            local lv = b.leave or 0;
+            log(('All chests in range checked - %d chest%s done%s.%s'):fmt(
+                b.n - lv, (b.n - lv) == 1 and '' or 's',
+                lv > 0 and (', %d left for you to check'):fmt(lv) or '',
+                far > 0 and (' %d more of yours %s out of range - walk closer.'):fmt(far, far == 1 and 'is' or 'are') or ''));
             state.batch = nil;
         end
         return;
@@ -596,7 +693,7 @@ end
 local function tick()
     local now = os.clock();
     local pt = state.pending_talk;
-    if pt and now - pt.t > 4.0 then
+    if pt and now - pt.t > 6.0 then   -- (lag: the server can be slow to answer)
         dbg(('auto: no menu from [%03X] (someone else\'s chest?)'):fmt(pt.index));
         state.pending_talk = nil;
     end
@@ -632,7 +729,7 @@ ashita.events.register('packet_in', 'cm_packet_in', function (e)
     if e.id == 0x0A then
         state.job, state.pending_talk, state.menu_open = nil, nil, nil;
         state.done, state.attempts, state.tried_at, state.reopen = {}, {}, {}, {};
-        state.mobs, state.deaths, state.seen_pyxis, state.owned = {}, {}, {}, {};
+        state.mobs, state.deaths, state.seen_pyxis, state.owned, state.conceal = {}, {}, {}, {}, {};
         state.batch = nil;
         return;
     end
@@ -737,8 +834,18 @@ ashita.events.register('packet_out', 'cm_packet_out', function (e)
 end);
 
 ashita.events.register('text_in', 'cm_text_in', function (e)
+    local raw = e.message or '';
+    -- the server tells your party / alliance each time one of its kills drops a chest
+    if raw:lower():find('concealing a treasure chest', 1, true) then
+        local now = os.clock();
+        table.insert(state.conceal, now);
+        -- kills still coming in (it can't tell whose kill it was, so not when only your own fights count)
+        if (cfg.combat_scope or 'party') ~= 'self' then
+            state.combat_until = math.max(state.combat_until or 0, now + (cfg.settle or 3));
+        end
+    end
     if not cfg.trace or not (state.job or state.pending_talk) then return; end
-    local msg = (e.message or ''):gsub('\30.', ''):gsub('\31.', ''):gsub('[%c]', '');
+    local msg = raw:gsub('\30.', ''):gsub('\31.', ''):gsub('[%c]', '');
     if msg ~= '' and not msg:lower():find('chestmaster', 1, true) then trace('chat: ' .. msg); end
 end);
 
@@ -826,7 +933,9 @@ PAGES.status = function ()
         (cfg.own_only ~= false) and ', your chests only' or ', any chest') or 'Off');
     vc.stat('Your chests seen', tostring(state.owned_n));
     if cfg.auto_talk and cfg.wait_combat ~= false and os.clock() < (state.combat_until or 0) then
-        vc.stat('Auto mode', 'waiting for the fight to end', vc.colors.gold);
+        vc.stat('Auto mode', ('waiting for the fight to end (%s)'):fmt(
+            ({ self = 'yours', party = 'your party\'s', alliance = 'the alliance\'s' })[cfg.combat_scope or 'party'] or 'your party\'s'),
+            vc.colors.gold);
     end
     local k = state.keys;
     vc.stat('Forbidden Keys', k.id and tostring(k.count) or '?', k.count > 0 and vc.colors.gold or vc.colors.dim);
@@ -890,6 +999,23 @@ PAGES.settings = function ()
     if v ~= nil then cfg.leave_show = v; save(); end
     v = vc.switch_row('wcombat', 'Wait until out of combat', cfg.wait_combat ~= false);
     if v ~= nil then cfg.wait_combat = v; save(); end
+    if cfg.wait_combat ~= false then
+        vc.label_row('Combat counts for', 250);
+        v = vc.seg('cscope', { { 'self', 'Me' }, { 'party', 'My party' }, { 'alliance', 'Alliance' } }, cfg.combat_scope or 'party');
+        if v ~= nil then cfg.combat_scope = v; save(); end
+        vc.note('Who must be out of the fight before chests are handled: monsters attacking them, monsters they claimed, or them engaged. Pick Me to farm chests while the rest of the alliance keeps fighting. Which chests count as yours is the whole alliance either way.');
+        vc.label_row('Wait after the last kill', 210);
+        v = vc.slider('settle', cfg.settle or 3, 1, 10, 1, '%ds', 150);
+        if v ~= nil then cfg.settle = v; save(); end
+        v = vc.switch_row('nfight', 'Nearby fights hold off chests', cfg.near_fight ~= false);
+        if v ~= nil then cfg.near_fight = v; save(); end
+        if cfg.near_fight ~= false then
+            vc.label_row('Nearby fight range', 210);
+            v = vc.slider('crad', cfg.combat_radius or 15, 1, 30, 1, '%d yalms', 150);
+            if v ~= nil then cfg.combat_radius = v; save(); end
+        end
+        vc.note('Nearby fights: any living monster this close to you that is claimed (by anyone) or hurt holds off chests, e.g. stunned or slept monsters that aren\'t attacking yet.');
+    end
     vc.label_row('Range', 210);
     v = vc.slider('ar', cfg.auto_range or 5.0, 2.0, 6.0, 0.5, '%.1f yalms', 150);
     if v ~= nil then cfg.auto_range = v; save(); end
@@ -1014,18 +1140,18 @@ local function draw_widget_yuna()
     local keys  = state.keys.id and tostring(state.keys.count) or '';
 
     -- geometry (sizes at 100%, as StopMove's defaults)
-    local TAG_W, TAG_H, NAME_W, NAME_H, GAP = 40, 17, (idle and 100 or 200), 30, 10;
+    local TAG_W, TAG_H, NAME_W, NAME_H, GAP = 40, 17, (idle and 112 or 200), 30, 10;
     local card = vex and (cfg.widget_row or 'card') == 'card';
     local pad = (card and 5 or 3) * u;          -- (room for the card's glow)
     local W, H, over;
     if card then                                -- [name | divider | tag] in one rounded card
-        TAG_W, TAG_H, NAME_W = 48, 18, (idle and 70 or 180);   -- (70: chest, key and a 3-digit count, no gap)
+        TAG_W, TAG_H, NAME_W = 48, 18, (idle and 86 or 180);   -- (86: chest, key and a centred 3-digit count)
         W, H = (NAME_W + GAP + TAG_W + 14) * u, math.max(NAME_H, TAG_H + 8) * u;
     elseif vex then
         over = blue and 0 or 0.32 * (NAME_H + TAG_H) / 2;
         W, H = (TAG_W + NAME_W - over) * u, NAME_H * u;
     else
-        if idle then NAME_W = 82; end           -- chest, key and a 3-digit count, no gap
+        if idle then NAME_W = 96; end           -- chest, key and a centred 3-digit count
         W, H = (NAME_W + GAP + TAG_W + 6) * u, math.max(NAME_H, TAG_H + 8) * u;
     end
 
