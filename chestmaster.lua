@@ -1,5 +1,5 @@
 --[[
-    ChestMaster 2.1 - Ashita v4 / VanaCore addon for Abyssea's Sturdy Pyxis.
+    ChestMaster 2.3 - Ashita v4 / VanaCore addon for Abyssea's Sturdy Pyxis.
 
     Walk up to your Sturdy Pyxis (or talk to it). ChestMaster reads what it holds straight
     from the server's menu packet and, by your rules, Leaves it to you, Opens it (trades it a
@@ -27,7 +27,7 @@
 
 addon.name    = 'chestmaster';
 addon.author  = 'Benthere';
-addon.version = '2.2.0';
+addon.version = '2.3.0';
 addon.desc    = 'Abyssea Sturdy Pyxis: leave, open or destroy each chest by what it holds.';
 addon.link    = '';
 
