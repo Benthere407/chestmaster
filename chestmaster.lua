@@ -147,7 +147,7 @@ local defaults = T{
     auto_talk   = true,    -- talk to a nearby pyxis by itself (by its server id)
     auto_range  = 5.0,     -- yalms
     own_only    = true,    -- auto-talk only to chests from monsters your party / alliance claimed
-    leave_show  = true,    -- auto mode reaching a Leave chest: show you its menu (false: close it quietly)
+    leave_show  = false,   -- auto mode reaching a Leave chest: false = skip it (close quietly) and carry on; true = show you its menu
     wait_combat = true,    -- auto mode: hold off until the fight is over (you idle, no party-claimed monster alive)
     trace       = false,   -- write chestmaster_trace.log in the addon folder (debugging only)
 };
@@ -434,6 +434,7 @@ local function decide(job)
     if job.auto and b then
         b.n = b.n + 1;
         count = ('[%d/%d] '):fmt(b.n, b.n - 1 + (b.left or 1));
+        if action == LEAVE then b.leave = (b.leave or 0) + 1; end   -- skipped: yours to check after
     end
     log(('%s%s chest: %s -> %s%s'):fmt(count, color, desc, ACT_NAMES[action], job.note and (' (' .. job.note .. ')') or ''));
     state.flash = { text = ('%s: %s'):fmt(ACT_NAMES[action], desc), until_t = os.clock() + 5 };
@@ -575,7 +576,9 @@ local function auto_scan(now)
         -- nothing left in range: say so once, after a round of chests
         local b = state.batch;
         if b and not state.job and not state.pending_talk then
-            log(('Done - %d chest%s handled.'):fmt(b.n, b.n == 1 and '' or 's'));
+            local left = b.leave or 0;
+            log(('All chests checked - %d chest%s done%s.'):fmt(b.n - left, (b.n - left) == 1 and '' or 's',
+                left > 0 and (', %d left for you to check'):fmt(left) or ''));
             state.batch = nil;
         end
         return;
@@ -687,7 +690,7 @@ ashita.events.register('packet_in', 'cm_packet_in', function (e)
     local acting = decide(job);
     if acting then
         if hide then e.blocked = true; state.menu_open = nil; end
-    elseif auto and cfg.leave_show ~= false then
+    elseif auto and cfg.leave_show == true then
         -- a chest you leave, reached by auto mode: its menu is shown to you to look at and pick
         job.shown = true;
         log('Left for you - its menu is open.');
@@ -883,7 +886,7 @@ PAGES.settings = function ()
     if v ~= nil then cfg.auto_talk = v; save(); end
     v = vc.switch_row('own', 'Only chests from my party / alliance kills', cfg.own_only ~= false);
     if v ~= nil then cfg.own_only = v; save(); end
-    v = vc.switch_row('lshow', 'Leave chests: open their menu for me (off: close it quietly)', cfg.leave_show ~= false);
+    v = vc.switch_row('lshow', 'Leave chests: stop and open their menu for me (off: skip them, I check them after)', cfg.leave_show == true);
     if v ~= nil then cfg.leave_show = v; save(); end
     v = vc.switch_row('wcombat', 'Wait until out of combat', cfg.wait_combat ~= false);
     if v ~= nil then cfg.wait_combat = v; save(); end
@@ -1363,6 +1366,10 @@ ashita.events.register('command', 'cm_command', function (e)
 end);
 
 ashita.events.register('load', 'cm_load', function ()
+    if not cfg.migrated_leave_skip then   -- Leave chests are skipped, not shown, during auto mode
+        cfg.leave_show, cfg.migrated_leave_skip = false, true;
+        save();
+    end
     if not cfg.migrated_trace_off then   -- the trace was on while ChestMaster was being fixed: off now
         cfg.trace, cfg.migrated_trace_off = false, true;
         save();

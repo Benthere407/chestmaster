@@ -1,4 +1,4 @@
-﻿# ChestMaster
+# ChestMaster
 
 An Ashita v4 / VanaCore addon for Abyssea's **Sturdy Pyxis** chests on LandSandBoat servers.
 Walk up to your chests and ChestMaster opens, destroys or leaves each one by what it holds:
@@ -20,7 +20,7 @@ no clicking through menus.
   | **Leave** | Leaves it to you (its menu can be opened for you). |
 
 - **Auto mode.** Talks to your chests by itself, one at a time, with a running count:
-  `[3/12] Blue chest: Tremendous exp -> Destroy` ... `Done - 12 chests handled.`
+  `[3/12] Blue chest: Tremendous exp -> Destroy` ... `All chests checked - 9 chests done, 3 left for you to check.` Chests set to Leave are skipped so the round never waits on you; check them after.
 - **Only your chests.** A chest counts as yours when it appears where a monster your party or
   alliance claimed just died. Other people's chests, free-spawning ones and mimics are left alone.
 - **Waits until out of combat** (optional) so chests are handled between pulls, not in the
