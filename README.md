@@ -31,6 +31,10 @@ no clicking through menus.
   monsters claimed, members engaged, and fights near you (stunned / slept monsters).
   **Combat counts for** Me / My party / Alliance, so you can farm chests while the rest of the
   alliance keeps fighting.
+- **AFK safety.** If you go 10 minutes without moving, pressing a key, clicking, using a
+  controller button, typing a command or acting, ChestMaster turns itself **OFF** and stays off
+  until you turn it back on. It can't be disabled: ChestMaster is for use at the keyboard only.
+  The Status page shows the countdown.
 - **Safe with your own clicks.** Chests you click are handled too; clicking one ChestMaster is
   already handling never leaves you stuck, and `/cm unstick` frees you if anything does.
 - **On-screen widget** in the VanaCore look: Classic, or YunaUI's **Vex** (menu card or party

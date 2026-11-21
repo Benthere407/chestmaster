@@ -1,5 +1,5 @@
 --[[
-    ChestMaster 2.3 - Ashita v4 / VanaCore addon for Abyssea's Sturdy Pyxis.
+    ChestMaster 2.4 - Ashita v4 / VanaCore addon for Abyssea's Sturdy Pyxis.
 
     Walk up to your Sturdy Pyxis (or talk to it). ChestMaster reads what it holds straight
     from the server's menu packet and, by your rules, Leaves it to you, Opens it (trades it a
@@ -23,11 +23,14 @@
         /cm widget     show / hide the ON/OFF pill
         /cm last       the last chest seen and what was done
         /cm debug      debug messages in chat
+
+    AFK safety: 10 minutes with no movement, key, mouse click, controller button, command or
+    action from you turns automation OFF until you turn it back on. Not configurable.
 ]]--
 
 addon.name    = 'chestmaster';
 addon.author  = 'Benthere';
-addon.version = '2.3.0';
+addon.version = '2.4.0';
 addon.desc    = 'Abyssea Sturdy Pyxis: leave, open or destroy each chest by what it holds.';
 addon.link    = '';
 
@@ -181,7 +184,13 @@ local state = {
     pending_talk = nil, -- { id, index, t }: we talked to it, waiting for its menu
     menu_open    = nil, -- os.clock() a menu (any npc's) was shown; nil once it closes
     last_scan = 0,
+    active_at = os.clock(), -- last time you moved, pressed a key / button, clicked or acted (AFK safety)
+    afk_pos   = nil,        -- { x, y, z }: where you were last seen moving
 };
+
+-- AFK safety: with no movement or input from you for this long, automation turns itself OFF.
+-- Fixed on purpose (no setting): ChestMaster is only for use at the keyboard.
+local AFK_MINUTES = 10;
 state.win.scale = cfg.ui_scale or 1.0;
 
 settings.register('v2', 'cm_settings_update', function (s)
@@ -196,6 +205,11 @@ local function save() settings.save('v2'); end
 -- Helpers
 ----------------------------------------------------------------------
 local function log(msg) print(chat.header(addon.name):append(chat.message(msg))); end
+
+-- you did something: the AFK timer starts over
+local function mark_active() state.active_at = os.clock(); end
+-- seconds until the AFK safety turns automation off
+local function afk_left() return AFK_MINUTES * 60 - (os.clock() - (state.active_at or os.clock())); end
 
 local TRACE_DIR = (addon.path and addon.path ~= '') and addon.path or (os.getenv('TEMP') or '.');
 if not TRACE_DIR:find('[\\/]$') then TRACE_DIR = TRACE_DIR .. '\\'; end
@@ -804,6 +818,11 @@ ashita.events.register('packet_in', 'cm_packet_in', function (e)
 end);
 
 ashita.events.register('packet_out', 'cm_packet_out', function (e)
+    -- AFK safety: your own actions (not ChestMaster's or another addon's) count as activity:
+    -- talk / attack / cast, trade, use an item, answer a menu. Position updates (0x15) are sent
+    -- all the time, so they don't count.
+    if not e.injected and (e.id == 0x1A or e.id == 0x36 or e.id == 0x37 or e.id == 0x5B) then mark_active(); end
+
     -- You talking to a chest: the game now waits for its menu. If ChestMaster is handling that
     -- chest already, the server won't answer and you'd be stuck: drop the talk and free you.
     if e.id == 0x1A and not e.injected and #e.data >= 0x0C then
@@ -880,7 +899,29 @@ end
 
 local function set_enabled(on)
     cfg.enabled = on; save();
+    if on then mark_active(); end   -- turning it on is you at the keyboard
     log('Automation ' .. (on and 'ON.' or 'OFF.'));
+end
+
+-- AFK safety, each frame: your movement counts as activity; with none of it (and no key,
+-- mouse, controller, command or action of yours) for AFK_MINUTES, automation turns OFF.
+local function afk_check()
+    local ok, x, y, z = pcall(function ()
+        local me = AshitaCore:GetMemoryManager():GetParty():GetMemberTargetIndex(0);
+        if me == 0 then return nil; end
+        return pos_of(AshitaCore:GetMemoryManager():GetEntity(), me);
+    end);
+    if ok and x then
+        local p = state.afk_pos;
+        if not p or math.abs(x - p[1]) + math.abs(y - p[2]) + math.abs(z - p[3]) > 0.5 then
+            if p then mark_active(); end
+            state.afk_pos = { x, y, z };
+        end
+    end
+    if not cfg.enabled or afk_left() > 0 then return; end
+    if state.job or state.pending_talk then return; end   -- let the chest in hand finish first
+    set_enabled(false);
+    log(('No movement or input for %d minutes: ChestMaster turned itself OFF (AFK safety). Turn it back on with /cm on or the widget.'):fmt(AFK_MINUTES));
 end
 
 -- the widget's on / off switch: flips ChestMaster and frees you if you're stuck
@@ -942,6 +983,11 @@ PAGES.status = function ()
     vc.stat('Working on', state.job and ('chest [%03X], step %d'):fmt(state.job.index, state.job.i or 0)
         or (state.pending_talk and 'talking to a chest' or 'nothing'));
     for _, t in ipairs(timed_lines()) do vc.stat(t[1], t[2], t[3] and vc.colors.good or vc.colors.gold); end
+    if cfg.enabled then
+        local left = math.max(0, afk_left());
+        vc.stat('AFK safety', ('turns OFF in %s if you stay idle'):fmt(mmss(left)),
+            left < 120 and vc.colors.gold or vc.colors.dim);
+    end
 
     vc.section('LAST CHEST');
     local l = state.last;
@@ -962,6 +1008,7 @@ PAGES.settings = function ()
     vc.section('AUTOMATION');
     local v = vc.switch_row('en', 'Handle chests automatically', cfg.enabled);
     if v ~= nil then set_enabled(v); end
+    vc.note(('AFK safety: with no movement, key, mouse or controller input, command or action from you for %d minutes, ChestMaster turns itself OFF. It stays off until you turn it back on. This can\'t be turned off: ChestMaster is for use at the keyboard only.'):fmt(AFK_MINUTES));
 
     vc.section('ON-SCREEN WIDGET');
     v = vc.switch_row('wid', 'Show the ON/OFF widget on screen', cfg.show_widget);
@@ -1040,6 +1087,7 @@ PAGES.help = function ()
     vc.note('You can also talk to a chest yourself; it is handled the same way.');
     vc.note('Timed: the first chest of that kind is opened (with a key) and starts the timer; every one after is destroyed until the timer runs out. With no key, nothing is opened and the timer does not start.');
     vc.note('Unlocked chests (the item list after opening) are always left to you.');
+    vc.note(('AFK safety: %d minutes without you moving, pressing a key or button, clicking, typing a command or acting turns ChestMaster OFF.'):fmt(AFK_MINUTES));
     vc.section('COMMANDS');
     vc.stat('/cm', 'show or hide this window');
     vc.stat('/cm on | off', 'automation on or off');
@@ -1447,6 +1495,7 @@ end
 
 ashita.events.register('d3d_present', 'cm_present', function ()
     run_sched();
+    afk_check();
     tick();
     update_keys(false);
     draw_widget();
@@ -1454,9 +1503,28 @@ ashita.events.register('d3d_present', 'cm_present', function ()
 end);
 
 ----------------------------------------------------------------------
+-- AFK safety: what counts as you being at the keyboard
+----------------------------------------------------------------------
+ashita.events.register('key', 'cm_afk_key', function (e) mark_active(); end);           -- any key (press or release)
+ashita.events.register('key_data', 'cm_afk_keydata', function (e)                       -- the game's own keyboard read
+    if e and e.down and not e.injected then mark_active(); end
+end);
+ashita.events.register('mouse', 'cm_afk_mouse', function (e)                           -- a click or the wheel
+    local m = e and (e.message or (e.type and e.type + 0x200)) or 0;
+    if m > 0x200 and m <= 0x20E then mark_active(); end   -- not plain moves (0x200): only a real press counts
+end);
+ashita.events.register('xinput_button', 'cm_afk_xinput', function (e)                   -- controller
+    if e and not e.injected and (e.state or 0) ~= 0 then mark_active(); end
+end);
+ashita.events.register('dinput_button', 'cm_afk_dinput', function (e)
+    if e and not e.injected and (e.state or 0) ~= 0 then mark_active(); end
+end);
+
+----------------------------------------------------------------------
 -- Commands
 ----------------------------------------------------------------------
 ashita.events.register('command', 'cm_command', function (e)
+    mark_active();   -- any command counts as activity
     local args = e.command:args();
     if #args == 0 then return; end
     local cmd = args[1]:lower();
